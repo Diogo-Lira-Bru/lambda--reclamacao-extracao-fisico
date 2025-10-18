@@ -11,8 +11,6 @@ sqs_client = boto3.client('sqs')
 SQS_QUEUE_URL = os.environ.get('SQS_CENTRAL_URL')
 
 def extrair_id_cliente_do_nome(file_key):
-
-    # padrão de 11 dígitos do cpf imaginado
     match = re.search(r'(\d{11})', file_key)
     
     if match:
@@ -23,8 +21,12 @@ def extrair_id_cliente_do_nome(file_key):
 
 def ocr_e_extracao(bucket_name, file_key):
     customer_id = extrair_id_cliente_do_nome(file_key)
-    print(f"ID de Cliente extraído do nome do arquivo (file_key): {customer_id}")
+    print(f"ID de Cliente extraído do nome do arquivo: {customer_id}")
     
+    # ----------------------------------------------------
+    # 1. ACESSO REAL AO S3 (ONDE O OCR/EXTRAÇÃO OCORRERIA)
+    # ----------------------------------------------------
+
     try:
         response = s3_client.get_object(Bucket=bucket_name, Key=file_key)
         content_length = response['ContentLength']
@@ -32,8 +34,7 @@ def ocr_e_extracao(bucket_name, file_key):
 
 
     except Exception as e:
-        print(f"ERRO S3: Falha ao acessar o arquivo {file_key}. Erro: {e}")
-        raise 
+        print(f"ERRO CRÍTICO S3: Falha ao acessar o arquivo {file_key}. Erro: {e}")
 
     extracted_text = (
         f"Documento de reclamação para o cliente ID: {customer_id}. "
@@ -45,15 +46,18 @@ def ocr_e_extracao(bucket_name, file_key):
 def lambda_handler(event, context):
     print("Evento S3 de upload recebido. Iniciando extração física.")
 
+    # ----------------------------------------------------
+    # 2. RECEPÇÃO DO EVENTO E EXTRAÇÃO DE METADADOS S3
+    # ----------------------------------------------------
     s3_info = event['Records'][0]['s3']
     bucket_name = s3_info['bucket']['name']
     file_key = s3_info['object']['key']
 
-    reclamation_text, customer_id = simular_ocr_e_extracao(bucket_name, file_key)
+    reclamation_text, customer_id = ocr_e_extracao(bucket_name, file_key)
 
     standardized_reclamation = {
         'Id': str(uuid.uuid4()),
-        'CustomerIdentifier': customer_id, 
+        'CustomerIdentifier': customer_id,
         'ReclamationText': reclamation_text,
         'ReceivedDate': datetime.utcnow().isoformat() + 'Z',
         'SourceChannel': 'Physical',
@@ -63,6 +67,9 @@ def lambda_handler(event, context):
     }
     message_body = json.dumps(standardized_reclamation)
     
+    # ----------------------------------------------------
+    # 3. ENVIO PARA O SQS CENTRAL
+    # ----------------------------------------------------
     try:
         sqs_client.send_message(
             QueueUrl=SQS_QUEUE_URL,
@@ -78,5 +85,5 @@ def lambda_handler(event, context):
         return {'statusCode': 200, 'body': 'Ingestão e extração concluídas.'}
 
     except Exception as e:
-        print(f"ERRO CRÍTICO: Falha no SQS após extração. Erro: {e}")
+        print(f"ERRO CRÍTICO SQS: Falha no SQS após extração. Erro: {e}")
         raise e
